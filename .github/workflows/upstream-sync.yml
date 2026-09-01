@@ -51,12 +51,30 @@ jobs:
           before=$(git rev-parse HEAD)
           echo "mode=$MODE  ours=$before  theirs=$(git rev-parse upstream/dev)"
 
+          # GITHUB_TOKEN may never create, update or delete a file under
+          # .github/workflows -- the push is rejected outright, which is what
+          # broke run 33553104962. So the workflow directory is PINNED to the
+          # Vyges set: after every sync it is made byte-identical to what is
+          # already on origin/dev, and the push therefore carries no workflow
+          # diff at all. Changing these files is a human action with a
+          # workflow-scoped token, never something a sync does silently.
+          # It is also the behaviour we want on the merits: IHP's own DRC/LVS
+          # regressions are their CI, and running them on a mirror burns Actions
+          # minutes on results nobody reads.
+          pin_workflows() {
+            rm -rf .github/workflows
+            git checkout origin/dev -- .github/workflows 2>/dev/null || true
+            git add -A .github/workflows 2>/dev/null || true
+            git diff --cached --quiet || git commit -m 'vyges: pin .github/workflows to the Vyges set'
+          }
+
           if [ "$MODE" = reset ]; then
             # One-time realignment. --force-with-lease pinned to the sha we read,
             # so a concurrent push aborts rather than being clobbered.
             git checkout -B dev upstream/dev
+            pin_workflows
             git push --force-with-lease="dev:$before" origin dev
-            echo "dev reset to upstream/dev $(git rev-parse HEAD)"
+            echo "dev reset to upstream/dev $(git rev-parse upstream/dev)"
           else
             # -X ours: on any conflict keep the Vyges side. Exits NON-ZERO on a
             # conflict on purpose — a sync that quietly gave up would leave the
@@ -66,6 +84,7 @@ jobs:
               echo "::error::merge conflict against upstream/dev; mirror NOT updated"
               exit 1
             fi
+            pin_workflows
             if [ "$(git rev-parse HEAD)" != "$before" ]; then
               git push origin HEAD:dev
               echo "synced upstream changes"
