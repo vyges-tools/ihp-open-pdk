@@ -1,0 +1,76 @@
+name: Upstream Sync (dev)
+# Mirror IHP-GmbH/IHP-Open-PDK **dev** into this Vyges mirror.
+#
+# WHY dev AND NOT main: as of 2026-09-01 (upstream PR #1124, merged 13:34 UTC,
+# head ab1510c) the SG13CMOS-5L overlay lives INSIDE this repository — the dev
+# tree root carries ihp-common/, ihp-sg13cmos5l/ and ihp-sg13g2/ side by side
+# with Makefile.sg13cmos5l and Makefile.sg13g2. main's root still has only
+# ihp-sg13g2/. One tree, one commit pin, symlinks that resolve because base and
+# overlay are checked out under one root by construction — which is the whole
+# reason we asked upstream for a single PDK. dev is also the branch IHP's own
+# reviewers work on, and it already contains the rhigh corner fix 4b7d7422
+# (verified: compare/dev...4b7d7422 is ahead_by 0, i.e. an ancestor).
+#
+# The Vyges additions (ihp_*.vyges-pdk.json descriptors + these workflows) are
+# mirror-only paths that do not exist upstream, so the merge never touches them.
+on:
+  schedule:
+    - cron: '37 6 * * *'   # daily 06:37 UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'merge = fold upstream/dev in (normal). reset = force dev to upstream/dev, DISCARDING Vyges commits on dev.'
+        required: false
+        default: merge
+        type: choice
+        options: [merge, reset]
+permissions:
+  contents: write
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Sync from upstream dev
+        run: |
+          set -euo pipefail
+          git config user.name  vyges-bot
+          git config user.email bot@vyges.com
+          git remote add upstream https://github.com/IHP-GmbH/IHP-Open-PDK.git
+          git fetch --no-tags upstream dev
+          git fetch upstream 'refs/tags/*:refs/tags/*' || true
+
+          MODE='${{ github.event.inputs.mode }}'
+          MODE="${MODE:-merge}"
+          before=$(git rev-parse HEAD)
+          echo "mode=$MODE  ours=$before  theirs=$(git rev-parse upstream/dev)"
+
+          if [ "$MODE" = reset ]; then
+            # One-time realignment. --force-with-lease pinned to the sha we read,
+            # so a concurrent push aborts rather than being clobbered.
+            git checkout -B dev upstream/dev
+            git push --force-with-lease="dev:$before" origin dev
+            echo "dev reset to upstream/dev $(git rev-parse HEAD)"
+          else
+            # -X ours: on any conflict keep the Vyges side. Exits NON-ZERO on a
+            # conflict on purpose — a sync that quietly gave up would leave the
+            # mirror stale while the badge stayed green.
+            if ! git merge --no-edit -X ours upstream/dev; then
+              git merge --abort || true
+              echo "::error::merge conflict against upstream/dev; mirror NOT updated"
+              exit 1
+            fi
+            if [ "$(git rev-parse HEAD)" != "$before" ]; then
+              git push origin HEAD:dev
+              echo "synced upstream changes"
+            else
+              echo "already up to date"
+            fi
+          fi
+          git push origin --tags || true
