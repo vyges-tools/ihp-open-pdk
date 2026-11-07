@@ -76,13 +76,28 @@ jobs:
             git push --force-with-lease="dev:$before" origin dev
             echo "dev reset to upstream/dev $(git rev-parse upstream/dev)"
           else
-            # -X ours: on any conflict keep the Vyges side. Exits NON-ZERO on a
-            # conflict on purpose — a sync that quietly gave up would leave the
-            # mirror stale while the badge stayed green.
+            # -X ours: on any content conflict keep the Vyges side. It does NOT
+            # settle a modify/delete conflict: when upstream edits one of ITS
+            # workflows that the mirror deleted (drc_regression.yml and
+            # lvs_regression.yml, run 42395757359), the merge stops. Those paths
+            # are pinned below anyway, so a conflict confined to
+            # .github/workflows is resolved by pinning and the merge completes.
+            # Any other conflict still exits NON-ZERO on purpose — a sync that
+            # quietly gave up would leave the mirror stale while the badge
+            # stayed green.
             if ! git merge --no-edit -X ours upstream/dev; then
-              git merge --abort || true
-              echo "::error::merge conflict against upstream/dev; mirror NOT updated"
-              exit 1
+              other=$(git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/' || true)
+              if [ -n "$other" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+                git merge --abort || true
+                echo "::error::merge conflict against upstream/dev; mirror NOT updated"
+                [ -n "$other" ] && echo "$other"
+                exit 1
+              fi
+              echo "conflicts only under .github/workflows; resolving to the Vyges set"
+              rm -rf .github/workflows
+              git checkout origin/dev -- .github/workflows
+              git add -A .github/workflows
+              git commit --no-edit
             fi
             pin_workflows
             if [ "$(git rev-parse HEAD)" != "$before" ]; then
